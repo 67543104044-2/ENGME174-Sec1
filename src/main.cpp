@@ -1,50 +1,97 @@
 #include <Arduino.h>
 
-// กำหนดขา LED
-const int ledPins[] = {23, 19, 18, 5, 17, 16, 4, 0};
-const int numLEDs = sizeof(ledPins) / sizeof(ledPins[0]);
+// กำหนดขา ADC สำหรับ Potentiometer 4 ตัว
+int potPins[] = {36, 39, 12, 13};
+// กำหนดขา GPIO สำหรับ LED 8 ดวง (แบ่งเป็น 4 กลุ่ม)
+int ledPins[][2] = {{23, 19}, {18, 5}, {17, 16}, {4, 0}};
+// PWM Channels สำหรับ LED แต่ละดวง
+int pwmChannels[] = {0, 1, 2, 3, 4, 5, 6, 7};
+int pwmFrequency = 5000;  // ความถี่ PWM 5kHz
+int pwmResolution = 8;    // ความละเอียด PWM 8 บิต (0-255)
+// ขา Digital Input สำหรับ Switch 6 ตัว
+int switchPins[] = {15, 2, 34, 35, 32, 33}; 
 
-// กำหนดขา Potentialmeter
-const int potPin = 36;
+bool chasingMode = false;  // โหมด Chasing LED
+bool systemEnabled = true; // ระบบเปิด/ปิด LED
 
 void setup() {
-    // ตั้งค่าขา LED เป็น OUTPUT
-    for (int i = 0; i < numLEDs; i++) {
-        pinMode(ledPins[i], OUTPUT);
+  // ตั้งค่า PWM สำหรับ LED
+  for (int group = 0; group < 4; group++) {
+    for (int led = 0; led < 2; led++) {
+      int pin = ledPins[group][led];
+      int channel = pwmChannels[group * 2 + led];
+      ledcAttachPin(pin, channel);
+      ledcSetup(channel, pwmFrequency, pwmResolution);
     }
+  }
 
-    // ตั้งค่าขา Potentialmeter เป็น INPUT
-    pinMode(potPin, INPUT);
+  // ตั้งค่า Switch เป็น Input
+  for (int i = 0; i < 6; i++) {
+    pinMode(switchPins[i], INPUT_PULLUP);
+  }
 }
 
 void loop() {
-    // อ่านค่าจาก Potentialmeter (แรงดันไฟฟ้า)
-    int potValue = analogRead(potPin);
-    float voltage = potValue * (3.3 / 4095.0); // แปลงค่า ADC เป็นแรงดันไฟฟ้า (0 - 3.3V)
+  static bool lastSwitch5State = HIGH;
+  static bool lastSwitch6State = HIGH;
 
-    // ควบคุม LED ตามเงื่อนไข
-    if (voltage >= 0 && voltage <= 0.9) {
-        // แรงดัน 0-0.9V: LED ทุกดวงดับ
-        for (int i = 0; i < numLEDs; i++) {
-            digitalWrite(ledPins[i], LOW);
-        }
-    } else if (voltage > 0.9 && voltage <= 2.0) {
-        // แรงดัน 1-2V: LED หลอดที่ 1-3 ติด
-        for (int i = 0; i < numLEDs; i++) {
-            digitalWrite(ledPins[i], i < 3 ? HIGH : LOW);
-        }
-    } else if (voltage > 2.0 && voltage <= 3.0) {
-        // แรงดัน 2-3V: LED หลอดที่ 1-5 ติด
-        for (int i = 0; i < numLEDs; i++) {
-            digitalWrite(ledPins[i], i < 5 ? HIGH : LOW);
-        }
-    } else if (voltage > 3.0) {
-        // แรงดันมากกว่า 3V: LED ทุกดวงติด
-        for (int i = 0; i < numLEDs; i++) {
-            digitalWrite(ledPins[i], HIGH);
-        }
+  // ตรวจสอบ Switch ที่ 5 สำหรับสลับโหมดระหว่าง Potentiometer และ Chasing LED
+  bool currentSwitch5State = digitalRead(switchPins[4]);
+  if (lastSwitch5State == HIGH && currentSwitch5State == LOW) {
+    chasingMode = !chasingMode; // สลับโหมด
+    delay(200); // Debounce
+  }
+  lastSwitch5State = currentSwitch5State;
+
+  // ตรวจสอบ Switch ที่ 6 สำหรับเปิด/ปิดระบบทั้งหมด
+  bool currentSwitch6State = digitalRead(switchPins[5]);
+  if (lastSwitch6State == HIGH && currentSwitch6State == LOW) {
+    systemEnabled = !systemEnabled; // สลับสถานะระบบ
+    delay(200); // Debounce
+  }
+  lastSwitch6State = currentSwitch6State;
+
+  // หากระบบถูกปิด ให้ปิดไฟ LED ทั้งหมดและหยุดการทำงาน
+  if (!systemEnabled) {
+    for (int i = 0; i < 8; i++) {
+      int channel = pwmChannels[i];
+      ledcWrite(channel, 0); // ปิดไฟ LED ทุกดวง
     }
+    return; // ออกจาก loop
+  }
 
-    // หน่วงเวลาเล็กน้อยเพื่อป้องกันการอ่านค่าถี่เกินไป
-    delay(100);
+  // ระบบทำงานปกติ
+  if (chasingMode) {
+    // โหมด Chasing LED
+    for (int i = 0; i < 8; i++) {
+      for (int j = 0; j < 8; j++) {
+        int channel = pwmChannels[j];
+        ledcWrite(channel, (j == i) ? 255 : 0);
+      }
+      delay(200); // หน่วงเวลาเพื่อให้เกิดเอฟเฟกต์วิ่ง
+    }
+  } else {
+    // โหมดหรี่ไฟ (ควบคุมด้วย Potentiometer)
+    for (int group = 0; group < 4; group++) {
+      // ตรวจสอบสถานะของ Switch
+      if (digitalRead(switchPins[group]) == LOW) {
+        // Switch ปิด -> ปิด LED ทั้งสองดวงในกลุ่ม
+        for (int led = 0; led < 2; led++) {
+          int channel = pwmChannels[group * 2 + led];
+          ledcWrite(channel, 0);
+        }
+      } else {
+        // Switch เปิด -> ใช้งาน Potentiometer
+        int potValue = analogRead(potPins[group]);
+        int dutyCycle = map(potValue, 0, 4095, 0, 255);
+        for (int led = 0; led < 2; led++) {
+          int channel = pwmChannels[group * 2 + led];
+          ledcWrite(channel, dutyCycle);
+        }
+      }
+    }
+  }
+
+  // หน่วงเวลาเล็กน้อย
+  delay(10);
 }
